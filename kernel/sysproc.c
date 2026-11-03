@@ -91,3 +91,15 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// System call thu thập thông tin cây tiến trình đang hoạt động
+uint64
+sys_ptree(void)
+{
+  uint64 addr;
+  int max;
+
+  argaddr(0, &addr);
+  argint(1, &max);
+  return proc_ptree(addr, max);
+}
