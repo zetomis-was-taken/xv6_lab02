@@ -156,8 +156,7 @@ flowchart TD
 
 pstree và system call ptree đã được biên dịch và kiểm thử trực tiếp trên môi trường giả lập QEMU của hệ điều hành xv6. Có hai nhóm kết quả: các trường hợp thực thi trực tiếp trên QEMU quan sát được từ giao diện shell, và các ca kiểm thử biên an toàn được xác nhận dựa trên luồng điều khiển mã nguồn.
 
-> **Ghi chú về phương pháp kiểm thử hai trường hợp độc lập**:
-> Hai trường hợp thực nghiệm dưới đây được tiến hành trong **hai phiên khởi động hệ điều hành xv6 hoàn toàn riêng biệt trên QEMU** (clean boot) nhằm theo dõi sự cấp phát mã định danh tiến trình PID tuần tự và nguyên bản từ trạng thái hệ thống mới khởi tạo.
+
 
 #### 3.4.1 Trường hợp 1: Cây tiến trình chuẩn từ shell khởi động
 
