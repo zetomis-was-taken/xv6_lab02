@@ -1,23 +1,24 @@
 #set page(
   paper: "a4",
   margin: (x: 2.2cm, top: 2.5cm, bottom: 2.5cm),
-  header: locate(loc => {
-    if loc.page() > 1 {
-      text(9pt, fill: rgb("#64748b"))[
+  header: context {
+    if counter(page).get().first() > 1 [
+      #text(9pt, fill: rgb("#64748b"))[
         #grid(
           columns: (1fr, 1fr),
           align(left)[Báo cáo Thực hành Hệ điều hành: xv6-riscv],
           align(right)[System Call Trace]
         )
+        #v(-0.3em)
         #line(length: 100%, stroke: 0.5pt + rgb("#cbd5e1"))
       ]
-    }
-  }),
-  footer: locate(loc => {
-    align(center)[
-      #text(9pt, fill: rgb("#64748b"))[Trang #loc.page()]
     ]
-  })
+  },
+  footer: [
+    #align(center)[
+      #text(9pt, fill: rgb("#64748b"))[Trang #counter(page).display()]
+    ]
+  ]
 )
 
 #set text(
@@ -96,12 +97,12 @@ System call là giao diện giao tiếp chuẩn giữa user space và kernel. Nh
 - *Lưu ý quan trọng*:
   - `trace_mask` phải được tự động sao chép sang các tiến trình con được tạo thông qua `fork()`.
   - Tiến trình được theo dõi hoàn toàn cô lập, không làm ảnh hưởng đến hành vi hay đầu ra của các tiến trình khác trong hệ thống.
-- *Chương trình user `trace`*: Cung cấp tiện ích dòng lệnh `trace <mask <command> [args...]` cho phép người dùng khởi chạy bất kỳ chương trình nào kèm theo chế độ theo dõi mong muốn.
+- *Chương trình user `trace`*: Cung cấp tiện ích dòng lệnh `trace <mask > <command> [args...]` cho phép người dùng khởi chạy bất kỳ chương trình nào kèm theo chế độ theo dõi mong muốn.
 
 === Input
 - *Cú pháp dòng lệnh*:
   ```bash
-  $ trace <mask <command> [args...]
+  $ trace <mask > <command> [args...]
   ```
   - `mask`: Số nguyên biểu diễn bitmask (hệ thập phân). Ví dụ: `32` ứng với $1 << 5$ (`SYS_read`), `2147483647` ứng với việc bật toàn bộ 31 bit thấp để theo dõi tất cả syscall.
   - `<command>`: Tên chương trình mục tiêu cần chạy và các đối số đi kèm.
@@ -185,14 +186,14 @@ System call là giao diện giao tiếp chuẩn giữa user space và kernel. Nh
 === Lưu đồ hoạt động
 
 #figure(
-  image("figures/trace_user_flow.svg", width: 82%),
+  image("figures/trace_user_flow.svg", width: 85%),
   caption: [Lưu đồ 1: Luồng thực thi của tiện ích user `trace`]
 )
 
 #v(1em)
 
 #figure(
-  image("figures/trace_kernel_syscall.svg", width: 85%),
+  image("figures/trace_kernel_syscall.svg", width: 88%),
   caption: [Lưu đồ 2: Cơ chế điều phối và ghi log trong kernel (`syscall()`)]
 )
 
@@ -208,7 +209,7 @@ System call là giao diện giao tiếp chuẩn giữa user space và kernel. Nh
   - *Giải pháp*: Dời bước kiểm tra điều kiện `(p->trace_mask & (1 << num))` và in log xuống ngay *sau* khi handler `syscalls[num]()` đã chạy xong. Lúc này `sys_trace()` đã kịp cập nhật `mask` mới vào `struct proc`.
 
 + *Cảnh báo format của trình biên dịch và hiển thị mã lỗi số âm*:
-  - *Hiện tượng*: Thanh ghi chứa giá trị trả về `p->trapframe->a0` có kiểu `uint64`. Trình biên dịch GCC trên RISC-V kích hoạt cờ kiểm tra nghiêm ngặt `-Werror=format=`, báo lỗi nếu dùng định dạng `%d` cho trường `uint64`. Tuy nhiên, nếu đổi sang `%lu`, các mã lỗi syscall trả về dạng số âm như `-1` sẽ bị in thành số nguyên không dấu 64-bit khổng lồ ($18446744073709551615$), làm sai lệch hoàn toàn định dạng yêu cầu.
+  - *Hiện tượng*: Thanh ghi chứa giá trị trả về `p->trapframe->a0` có kiểu `uint64`. Trình biên dịch GCC trên RISC-V kích hoạt cờ kiểm tra nghiêm ngặt `-Werror=format=`, báo lỗi nếu dùng định dạng `%d` cho trường `uint64`. Tuy nhiên, nếu đổi sang `%lu`, các mã lỗi syscall trả về dạng số âm như `-1` sẽ bị in thành số nguyên không dấu 64-bit khổng lồ (`18446744073709551615`), làm sai lệch hoàn toàn định dạng yêu cầu.
   - *Giải pháp*: Ép kiểu tường minh về số nguyên `(int)p->trapframe->a0` khi truyền vào hàm `printf`. Thao tác này vừa loại bỏ triệt để cảnh báo từ compiler, vừa đảm bảo hiển thị đúng số nguyên có dấu của mã lỗi (ví dụ: `-> -1`).
 
 + *Kế thừa và cô lập `trace_mask` qua các thế hệ tiến trình*:
