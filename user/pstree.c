@@ -93,7 +93,7 @@ main(int argc, char *argv[])
     }
   }
 
-  // In các tiến trình mồ côi (orphan) còn sót lại để không bỏ sót tiến trình nào
+  // In các tiến trình còn sót lại để không bỏ sót tiến trình nào
   for (i = 0; i < n; i++) {
     if (!visited[i]) {
       print_tree(plist[i].pid, 0, plist, n, visited);

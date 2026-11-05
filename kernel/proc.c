@@ -719,7 +719,7 @@ proc_ptree(uint64 dst_addr, int max)
     release(&p->lock);
   }
 
-  // Yêu cầu đề bài: Trả về -1 nếu số tiến trình thực tế vượt quá max
+  // Trả về -1 nếu số tiến trình thực tế vượt quá max
   if (total_active > max)
     return -1;
 
@@ -740,7 +740,7 @@ proc_ptree(uint64 dst_addr, int max)
       kinfo.memsize = p->sz;
       safestrcpy(kinfo.name, p->name, sizeof(kinfo.name));
 
-      // Giải phóng p->lock trước khi gọi copyout để tránh ngủ trong lúc giữ spinlock
+      // Giải phóng p->lock trước khi gọi copyout để tránh sleep trong lúc giữ spinlock
       release(&p->lock);
 
       offset = dst_addr + (uint64)count * sizeof(struct ptreeinfo);
