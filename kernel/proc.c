@@ -696,8 +696,7 @@ procdump(void)
 }
 
 // Thu thập thông tin các tiến trình đang hoạt động trong hệ thống
-int
-proc_ptree(uint64 dst_addr, int max)
+int proc_ptree(uint64 dst_addr, int max)
 {
   struct proc *p;
   struct proc *my_p = myproc();

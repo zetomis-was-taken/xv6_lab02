@@ -6,8 +6,7 @@
 #define MAX_PROC 64
 
 // In khoảng trắng để thụt lề
-static void
-print_indent(int depth)
+static void print_indent(int depth)
 {
   int i;
   for (i = 0; i < depth; i++) {
@@ -16,8 +15,7 @@ print_indent(int depth)
 }
 
 // Duyệt và in cây tiến trình theo thứ tự ưu tiên chiều sâu (DFS)
-static void
-print_tree(int pid, int depth, struct ptreeinfo plist[], int total, int visited[])
+static void print_tree(int pid, int depth, struct ptreeinfo plist[], int total, int visited[])
 {
   int idx = -1;
   int i, j;
@@ -49,11 +47,11 @@ print_tree(int pid, int depth, struct ptreeinfo plist[], int total, int visited[
   }
 }
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
-  struct ptreeinfo plist[MAX_PROC];
-  int visited[MAX_PROC];
+  // Cấp phát trong vùng BSS để tiết kiệm không gian User Stack (4096 bytes) cho đệ quy DFS
+  static struct ptreeinfo plist[MAX_PROC];
+  static int visited[MAX_PROC];
   int n, i, j;
 
   // Gọi system call ptree để lấy danh sách tiến trình từ kernel

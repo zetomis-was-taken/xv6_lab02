@@ -79,14 +79,14 @@ Kernel chịu trách nhiệm bảo vệ cấu trúc nội bộ, trích xuất d�
 
 ```mermaid
 flowchart TD
-    Start(["Bắt đầu: pstree"]) --> Alloc["Khai báo plist[64] và visited[64] trên stack"]
+    Start(["Bắt đầu: pstree"]) --> Alloc["Cấp phát tĩnh plist[64] và visited[64]"]
     Alloc --> CallSys["Gọi ptree(plist, 64)"]
     CallSys --> CheckRet{"n < 0 "}
     
-    CheckRet -- "Có" --> PrintErr["In lỗi: pstree: ptree failed"]
+    CheckRet -- "Đúng" --> PrintErr["In lỗi: pstree: ptree failed"]
     PrintErr --> ExitFail(["Thoát mã lỗi 1"])
     
-    CheckRet -- "Không" --> Sort["Sắp xếp plist theo PID tăng dần"]
+    CheckRet -- "Sai" --> Sort["Sắp xếp plist theo PID tăng dần"]
     Sort --> DFSInit["Duyệt DFS từ PID 1: print_tree(1, depth=0)"]
     DFSInit --> SubDFS["Mỗi nút: in thụt lề 2*depth, đánh dấu visited, đệ quy các nút con"]
     SubDFS --> ScanRoots["Quét các nút chưa thăm có ppid <= 0: in ở depth=0"]
@@ -150,7 +150,7 @@ flowchart TD
 
 - **Vấn đề**: Nếu chỉ duyệt đệ quy DFS thuần túy từ gốc init (PID 1), các tiến trình có ppid <= 0 hoặc các nút bị cô lập khỏi nhánh chính do sai lệch dữ liệu sẽ bị bỏ sót.
 - **Giải pháp**: Cài đặt cơ chế quét ba tầng trong user/pstree.c: (1) Duyệt DFS đệ quy từ init (PID 1); (2) Quét bổ sung các nút chưa thăm có ppid <= 0 ở mức gốc (depth = 0); (3) Quét vét cạn mọi nút còn lại chưa được đánh dấu visited. Nhờ đó, toàn bộ bản ghi do kernel trả về đều được hiển thị đầy đủ.
-
+- **Tối ưu hóa User Stack**: Do User Stack của xv6 chỉ có kích thước 1 trang (4096 bytes), hai mảng plist[64] và visited[64] (chiếm hơn 2.8 KB) được khai báo static để cấp phát trong phân vùng BSS thay vì trên stack. Điều này giải phóng trọn vẹn không gian stack cho các khung đệ quy DFS của hàm print_tree(), loại bỏ hoàn toàn nguy cơ tràn stack khi cây tiến trình có độ sâu phân nhánh lớn.
 
 ### 3.4 Thực nghiệm và Kết quả kiểm thử
 
@@ -169,8 +169,8 @@ pstree và system call ptree đã được biên dịch và kiểm thử trực 
       3 pstree state=4 mem=20480
   ```
 - **Cấu trúc tiến trình**:
-  - *1 init state=2 mem=20480*: Tiến trình gốc của hệ thống (PID 1, PPID 0), mức thụt lề 0 (cấp gốc), trạng thái SLEEPING (2 - đang ngủ chờ tiến trình con qua hàm wait()), không gian địa chỉ người dùng p->sz là 20480 bytes (tương ứng 5 trang nhớ ảo $5 \times 4096$).
-  - *2 sh state=2 mem=24576*: Shell cha (PID 2, PPID 1), con trực tiếp của init, thụt lề 2 khoảng trắng (cấp 1), trạng thái SLEEPING (2 - đang chờ nhập lệnh từ console), không gian địa chỉ 24576 bytes (6 trang nhớ ảo $6 \times 4096$).
+  - *1 init state=2 mem=20480*: Tiến trình gốc của hệ thống (PID 1, PPID 0), mức thụt lề 0 (cấp gốc), trạng thái SLEEPING (2 - đang ngủ chờ tiến trình con qua hàm wait()), không gian địa chỉ người dùng p->sz là 20480 bytes (tương ứng 5 trang nhớ ảo, 5 * 4096 bytes).
+  - *2 sh state=2 mem=24576*: Shell cha (PID 2, PPID 1), con trực tiếp của init, thụt lề 2 khoảng trắng (cấp 1), trạng thái SLEEPING (2 - đang chờ nhập lệnh từ console), không gian địa chỉ 24576 bytes (tương ứng 6 trang nhớ ảo, 6 * 4096 bytes).
   - *3 pstree state=4 mem=20480*: Tiến trình con thực thi tiện ích pstree (PID 3, PPID 2), con của sh, thụt lề 4 khoảng trắng (cấp 2), trạng thái RUNNING (4 - đang thực thi trên CPU để quét và in cây tiến trình), không gian địa chỉ 20480 bytes (5 trang nhớ ảo).
 - **Nhận xét**: Cây tiến trình hiển thị đúng 3 cấp phân nhánh theo cấu trúc DFS. Mức thụt lề 2 khoảng trắng cho mỗi thế hệ giúp phân biệt trực quan thứ bậc quan hệ cha - con. Các trạng thái và kích thước bộ nhớ phản ánh chính xác trạng thái thực thi tại thời điểm quét.
 
