@@ -1,237 +1,205 @@
-# Báo cáo: Triển khai System Call Trace trong xv6
+# Báo cáo Thực hành Hệ điều hành: System Call Trace
 
-## 1. Yêu cầu bài toán
+## 1 | System call Trace
 
-- **Mục tiêu**: Bổ sung system call `trace` cho xv6 nhằm theo dõi việc thực thi các system call của một tiến trình và các tiến trình con của nó.
-- **Giao diện user space**:
-  - System call: `int trace(int mask);`
-  - Tiện ích dòng lệnh: `trace <mask> <command> [args...]`
-- **Cơ chế lọc (Bitmask)**: 
-  - Tham số `mask` là số nguyên; bit thứ $i$ (bắt đầu từ 1) tương ứng với số hiệu syscall `SYS_*` được định nghĩa trong `kernel/syscall.h`.
-  - Kernel chỉ in log đối với các syscall có bit tương ứng trong `mask` mang giá trị 1.
-- **Định dạng log**:
+### 1.1 Mô tả bài toán
+
+#### 1.1.1 Yêu cầu
+System call là giao diện giao tiếp chuẩn giữa user space và kernel. Nhằm hỗ trợ debug và kiểm thử hoạt động của hệ điều hành, bài toán yêu cầu xây dựng tính năng theo dõi system call linh hoạt:
+- **Xây dựng system call `trace`**: Tiếp nhận một số nguyên `mask`. Mỗi bit thứ $i$ trong `mask` khi được bật (giá trị 1) biểu thị việc theo dõi syscall có số hiệu $i$ tương ứng (theo định nghĩa mã `SYS_*` trong `kernel/syscall.h`).
+- **Ghi log trong kernel**: Khi một tiến trình thực thi một syscall nằm trong `mask`, kernel sẽ in ra một dòng log chuẩn định dạng:
   ```text
   <pid>: syscall <tên_syscall> -> <giá_trị_trả_về>
   ```
-  Trong đó giá trị trả về lấy từ thanh ghi `a0` của trapframe sau khi syscall hoàn tất.
-- **Kế thừa tiến trình**: Tiến trình con sinh ra từ `fork()` tự động kế thừa `trace_mask` từ tiến trình cha. Lời gọi `exec()` giữ nguyên `trace_mask`.
+  Trong đó:
+  - `<pid>`: ID của tiến trình đang thực thi.
+  - `<tên_syscall>`: Tên định danh của syscall.
+  - `<giá_trị_trả_về>`: Giá trị trả về sau khi syscall hoàn tất (lấy từ register `a0`).
+- **Kế thừa và cô lập tiến trình**:
+  - `trace_mask` phải được tự động sao chép sang các tiến trình con được tạo thông qua `fork()`.
+  - Tiến trình được theo dõi hoàn toàn cô lập, không làm ảnh hưởng đến hành vi hay đầu ra của các tiến trình khác trong hệ thống.
+- **Chương trình user `trace`**: Cung cấp tiện ích dòng lệnh `trace <mask> <command> [args...]` cho phép người dùng khởi chạy bất kỳ chương trình nào kèm theo chế độ theo dõi mong muốn.
+
+#### 1.1.2 Input
+- **Cú pháp dòng lệnh**:
+  ```bash
+  $ trace <mask> <command> [args...]
+  ```
+  - `mask`: Số nguyên biểu diễn bitmask (hệ thập phân). Ví dụ: `32` ứng với $1 \ll 5$ (`SYS_read`), `2147483647` ứng với việc bật toàn bộ 31 bit thấp để theo dõi tất cả syscall.
+  - `<command>`: Tên chương trình mục tiêu cần chạy và các đối số đi kèm.
+- **Prototype API trong user space**:
+  ```c
+  int trace(int mask);
+  ```
+
+#### 1.1.3 Output
+- Thông tin log được kernel xuất trực tiếp ra console ngay khi syscall hoàn tất.
+- Không in log đối với các syscall không được bật trong `mask`, hoặc khi chạy các chương trình thông thường không gọi `trace`.
 
 ---
 
-## 2. Thiết kế và Hiện thực
+### 1.2 Thuật toán và Thiết kế giải pháp
 
-### 2.1 Cấu trúc dữ liệu và Quản lý vòng đời (`kernel/proc.h`, `kernel/proc.c`)
+#### 1.2.1 Ý tưởng cốt lõi và Cơ sở thiết kế
 
-- Bổ sung trường lưu trữ bitmask vào `struct proc`:
-  ```c
-  struct proc {
-    ...
-    int trace_mask;              // Bitmask các syscall cần theo dõi
-  };
-  ```
-- Quản lý trạng thái qua các giai đoạn của tiến trình trong `kernel/proc.c`:
-  - `allocproc()`: Khởi tạo `p->trace_mask = 0;` khi cấp phát tiến trình mới.
-  - `freeproc()`: Reset `p->trace_mask = 0;` khi giải phóng tiến trình để tránh sót dữ liệu sang tiến trình tái sử dụng slot `struct proc`.
-  - `fork()`: Sao chép cấu hình theo dõi sang tiến trình con: `np->trace_mask = p->trace_mask;`.
+1. **Quản lý trạng thái theo dõi trong `struct proc`**:
+   Mỗi tiến trình trong xv6 được kernel quản lý độc lập qua `struct proc` (lưu PID, trạng thái, bộ nhớ, `trapframe`...). Trạng thái theo dõi không thể dùng biến toàn cục vì sẽ gây xung đột (race condition) và mất tính cô lập (isolation) giữa các tiến trình. Do đó, việc bổ sung trường `int trace_mask` vào `struct proc` giúp mỗi tiến trình ghi nhớ danh sách syscall cần theo dõi một cách độc lập.
 
-### 2.2 System Call Handler (`kernel/sysproc.c`)
+2. **Kế thừa qua `fork()` và bảo toàn qua `exec()`**:
+   - **`fork()`**: Nhân bản tiến trình cha sang tiến trình con (sao chép toàn bộ vùng nhớ, thanh ghi và ngữ cảnh). Kernel sao chép trực tiếp giá trị `trace_mask` từ cha sang con để toàn bộ cây tiến trình con cháu đều duy trì trạng thái theo dõi.
+   - **`exec()`**: Thay thế không gian nhớ của tiến trình bằng chương trình thực thi mới nhưng giữ nguyên `struct proc` trong kernel. Do đó, khi tiện ích `trace` gọi `trace(mask)` rồi gọi `exec()`, chương trình mục tiêu tự động kế thừa `trace_mask` đã kích hoạt mà không cần cơ chế truyền tin phức tạp.
 
-Hiện thực handler `sys_trace()` xử lý yêu cầu từ user space:
-
-```c
-uint64
-sys_trace(void)
-{
-  int mask;
-  if(argint(0, &mask) < 0)
-    return -1;
-  myproc()->trace_mask = mask;
-  return 0;
-}
-```
-
-### 2.3 Điều phối và Xuất log (`kernel/syscall.h`, `kernel/syscall.c`)
-
-1. **Định nghĩa mã và bảng tra cứu**:
-   - Khai báo `#define SYS_trace 22` trong `kernel/syscall.h`.
-   - Đăng ký `[SYS_trace] sys_trace` vào mảng con trỏ hàm `syscalls[]`.
-   - Xây dựng mảng ánh xạ tên syscall `syscall_names[]`:
-     ```c
-     static char *syscall_names[] = {
-       [SYS_fork]    "fork",
-       [SYS_exit]    "exit",
-       [SYS_wait]    "wait",
-       [SYS_pipe]    "pipe",
-       [SYS_read]    "read",
-       [SYS_kill]    "kill",
-       [SYS_exec]    "exec",
-       [SYS_fstat]   "fstat",
-       [SYS_chdir]   "chdir",
-       [SYS_dup]     "dup",
-       [SYS_getpid]  "getpid",
-       [SYS_sbrk]    "sbrk",
-       [SYS_sleep]   "sleep",
-       [SYS_uptime]  "uptime",
-       [SYS_open]    "open",
-       [SYS_write]   "write",
-       [SYS_mknod]   "mknod",
-       [SYS_unlink]  "unlink",
-       [SYS_link]    "link",
-       [SYS_mkdir]   "mkdir",
-       [SYS_close]   "close",
-       [SYS_trace]   "trace",
-     };
-     ```
-
-2. **Kiểm tra mask và xuất log trong hàm `syscall()`**:
-   Sau khi handler hoàn tất việc ghi kết quả vào `trapframe->a0`, kernel kiểm tra bitmask và in log nếu syscall nằm trong danh sách theo dõi:
-   ```c
-   void
-   syscall(void)
-   {
-     int num;
-     struct proc *p = myproc();
-
-     num = p->trapframe->a7;
-     if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
-       p->trapframe->a0 = syscalls[num]();
-       if((p->trace_mask & (1 << num)) != 0) {
-         printf("%d: syscall %s -> %d\n",
-                p->pid, syscall_names[num], (int)p->trapframe->a0);
-       }
-     } else {
-       ...
-     }
-   }
-   ```
-
-### 2.4 Giao diện User space (`user/user.h`, `user/usys.pl`, `user/trace.c`)
-
-- Khai báo `int trace(int);` trong `user/user.h`.
-- Thêm `entry("trace");` vào `user/usys.pl` để sinh mã stub kích hoạt lệnh `ecall`.
-- Xây dựng tiện ích `user/trace.c`:
-  ```c
-  #include "kernel/types.h"
-  #include "kernel/stat.h"
-  #include "user/user.h"
-
-  int
-  main(int argc, char *argv[])
-  {
-    if(argc < 3){
-      fprintf(2, "Usage: trace mask command [args...]\n");
-      exit(1);
-    }
-
-    int mask = atoi(argv[1]);
-    if(trace(mask) < 0){
-      fprintf(2, "trace: failed to set mask\n");
-      exit(1);
-    }
-
-    exec(argv[2], &argv[2]);
-    fprintf(2, "trace: exec %s failed\n", argv[2]);
-    exit(1);
-  }
-  ```
+3. **Chặn bắt tại trap dispatcher (`syscall()`)**:
+   Khi tiến trình thực thi lệnh `ecall`, CPU trap vào kernel và chuyển điều khiển đến hàm điều phối `syscall()`. Tại đây, kernel gọi handler tương ứng và lưu kết quả trả về vào register `a0`. Bằng cách đặt điểm kiểm tra bitmask `(trace_mask & (1 << num))` ngay sau khi handler hoàn tất, kernel có thể tra cứu tên từ lookup table và in log ra console theo đúng định dạng.
 
 ---
 
-### 2.5 Lưu đồ hoạt động
+#### 1.2.2 Tiến trình xây dựng và thực thi giải pháp
 
-#### Luồng thực thi tiện ích `user/trace.c`
+- **Thiết lập giao diện và cầu nối User - Kernel**:
+  Định nghĩa mã `SYS_trace` trong `kernel/syscall.h`, khai báo prototype `int trace(int)` trong `user/user.h`, và thêm entry vào `user/usys.pl` để sinh mã stub tự động (`ecall`). Đồng thời, thêm chương trình vào danh sách `UPROGS` trong `Makefile` để hệ thống build biên dịch và đóng gói file thực thi `_trace` vào `fs.img` của xv6.
+
+- **Quản lý vòng đời `trace_mask` trong Kernel (`kernel/proc.c`)**:
+  Bảng tiến trình xv6 (`NPROC = 64`) liên tục tái chế các slot `struct proc`. Vì vậy, cần khởi tạo `trace_mask = 0` trong `allocproc()` để tránh nhận giá trị rác từ tiến trình cũ; sao chép `np->trace_mask = p->trace_mask` trong `fork()` để tiến trình con kế thừa cấu hình theo dõi; và xóa sạch `trace_mask = 0` trong `freeproc()` khi giải phóng tiến trình.
+
+- **Cài đặt System Call Handler (`kernel/sysproc.c`)**:
+  Hiện thực hàm `sys_trace()` để đọc đối số `mask` từ register `a0` thông qua hàm trợ thủ `argint()`, sau đó lưu vào trường `trace_mask` của tiến trình hiện hành (`myproc()`) và trả về `0`.
+
+- **Điều phối, kiểm tra mask và xuất log (`kernel/syscall.c`)**:
+  Đăng ký hàm `sys_trace` vào bảng vector `syscalls` và xây dựng lookup table `syscall_names` để ánh xạ số hiệu syscall sang chuỗi tên. Tại điểm trả về của hàm `syscall()`, kiểm tra điều kiện bit `(p->trace_mask & (1 << num)) != 0` để in log định dạng `<pid>: syscall <name> -> <return_value>`.
+
+- **Hiện thực tiện ích dòng lệnh `user/trace.c`**:
+  Chương trình đọc và chuyển đổi `argv[1]` thành số nguyên `mask` bằng `atoi()`, gọi syscall `trace(mask)` để thiết lập trạng thái cho tiến trình hiện hành, sau đó gọi `exec()` nạp chương trình mục tiêu cùng các đối số còn lại.
+
+---
+
+#### 1.2.3 Lưu đồ hoạt động
+
+##### Lưu đồ 1: Luồng thực thi chương trình user `trace`
 
 ```mermaid
 flowchart TD
-    Start(["Khởi chạy trace mask cmd [args...]"]) --> ParseArgs["Kiểm tra cú pháp và đọc mask = atoi(argv[1])"]
-    ParseArgs --> CallTrace["Gọi syscall trace(mask)"]
-    CallTrace --> ExecCmd["Gọi exec(argv[2], &argv[2])"]
-    ExecCmd --> TargetRun["Tiến trình thay thế bằng cmd mục tiêu<br/>(Duy trì trace_mask trong kernel)"]
+    Start(["Bắt đầu: trace [mask] [command] ..."]) --> CheckArgs{"argc >= 3 và<br/>argv[1] hợp lệ"}
+    CheckArgs -- "Không" --> PrintUsage["In hướng dẫn sử dụng ra stderr"]
+    PrintUsage --> ExitFail1(["Thoát với mã lỗi 1"])
+
+    CheckArgs -- "Có" --> ParseMask["Chuyển đổi argv[1] thành số nguyên mask: atoi()"]
+    ParseMask --> CallSysTrace["Gọi system call: trace(mask)"]
+    
+    CallSysTrace --> CheckSysTrace{"trace(mask) < 0"}
+    CheckSysTrace -- "Có (Lỗi)" --> PrintTraceErr["In thông báo lỗi: trace failed"]
+    PrintTraceErr --> ExitFail2(["Thoát với mã lỗi 1"])
+
+    CheckSysTrace -- "Không (Thành công)" --> PrepareArgs["Chuẩn bị mảng tham số mới từ argv[2]"]
+    PrepareArgs --> ExecCall["Gọi hàm exec() chạy chương trình mục tiêu"]
+    
+    ExecCall --> CheckExec{"exec thành công"}
+    CheckExec -- "Có" --> RunTargetProg["Chương trình mục tiêu tiếp quản tiến trình<br/>(kế thừa trace_mask đã thiết lập)"]
+    RunTargetProg --> EndSuccess(["Hoàn tất"])
+    
+    CheckExec -- "Không" --> PrintExecErr["In thông báo lỗi: trace: exec failed"]
+    PrintExecErr --> ExitFail3(["Thoát với mã 0"])
 ```
 
-#### Luồng điều phối và ghi log trong `kernel/syscall.c`
+---
+
+##### Lưu đồ 2: Cơ chế điều phối và ghi log trong kernel (`syscall()`)
 
 ```mermaid
 flowchart TD
-    Trap["Lệnh ecall từ user space"] --> ReadA7["Đọc số hiệu syscall từ a7"]
-    ReadA7 --> RunHandler["Thực thi handler syscalls[num]()<br/>Lưu kết quả vào trapframe->a0"]
-    RunHandler --> CheckMask{"(trace_mask & (1 << num)) != 0"}
-    CheckMask -- Có --> Log["printf: pid, tên syscall, return value"]
-    CheckMask -- Không --> Return["usertrapret(): Trả điều khiển về user space"]
-    Log --> Return
+    TrapEntry(["Lệnh ecall từ user space<br/>Trap vào kernel"]) --> FetchSysNum["Đọc số hiệu syscall từ register a7"]
+    FetchSysNum --> ValidateNum{"0 &lt; num &lt; NELEM(syscalls)<br/>và syscalls[num] != NULL"}
+    
+    ValidateNum -- "Không" --> PrintUnknown["In cảnh báo unknown syscall"]
+    PrintUnknown --> SetReturnErr["Gán trapframe->a0 = -1"]
+    SetReturnErr --> TrapReturn(["Trả điều khiển về user space qua usertrapret()"])
+    
+    ValidateNum -- "Có" --> ExecHandler["Gọi handler xử lý syscall tương ứng<br/>Lưu kết quả vào trapframe->a0"]
+    ExecHandler --> CheckMask{"(trace_mask & (1 << num)) != 0"}
+    
+    CheckMask -- "Đúng (Cần theo dõi)" --> PrintTrace["In log ra console:<br/>pid: syscall name -> return_value"]
+    PrintTrace --> TrapReturn
+    
+    CheckMask -- "Sai (Không theo dõi)" --> TrapReturn
 ```
 
 ---
 
-## 3. Các lưu ý kỹ thuật (Implementation Details)
+### 1.3 Những khó khăn gặp phải và giải pháp
 
-1. **Vị trí kiểm tra mask trong `syscall()`**:
-   Điều kiện `(p->trace_mask & (1 << num))` phải được đặt **sau** khi handler `syscalls[num]()` đã chạy xong. Nếu đặt trước, khi tiến trình gọi `trace(mask)` lần đầu, `trace_mask` trong `struct proc` tại thời điểm đó vẫn bằng 0, dẫn đến bỏ sót dòng log của chính syscall `trace`.
+1. **Vấn đề self-tracing (chính syscall `trace` bị bỏ lỡ)**:
+   - *Khó khăn*: Trong kịch bản theo dõi toàn bộ syscall (`trace 2147483647 ...`), dòng log đầu tiên xuất hiện phải là `4: syscall trace -> 0`. Nếu việc kiểm tra `trace_mask` được đặt trước khi gọi handler `sys_trace()`, tại thời điểm đó `trace_mask` của tiến trình vẫn bằng 0 nên lời gọi `trace` sẽ bị bỏ qua và không bao giờ được ghi vết.
+   - *Giải pháp*: Đặt bước kiểm tra điều kiện `(p->trace_mask & (1 << num))` ngay **sau** khi handler `syscalls[num]()` đã chạy xong. Lúc này `sys_trace()` đã cập nhật xong `mask` mới vào `struct proc`, giúp nhận diện và in chính xác log của chính syscall `trace`.
 
-2. **Ép kiểu giá trị trả về của thanh ghi `a0`**:
-   Thanh ghi `p->trapframe->a0` có kiểu số nguyên không dấu 64-bit (`uint64`). Nếu không ép kiểu về `(int)`:
-   - Trình biên dịch GCC trên RISC-V sẽ báo lỗi `-Werror=format` khi dùng định dạng `%d`.
-   - Nếu đổi sang `%lu`, các mã lỗi trả về dạng số âm (như `-1`) sẽ bị in thành giá trị `18446744073709551615`, vi phạm định dạng đầu ra.
+2. **Cảnh báo format của trình biên dịch và hiển thị mã lỗi số âm**:
+   - *Khó khăn*: Trình biên dịch GCC trên RISC-V kích hoạt cờ kiểm tra nghiêm ngặt `-Werror=format=`, báo lỗi nếu dùng định dạng `%d` cho `p->trapframe->a0` (do trường này có kiểu `uint64`). Tuy nhiên, nếu đổi sang `%lu`, các mã lỗi syscall trả về dạng số âm như `-1` sẽ bị in thành số nguyên không dấu 64-bit cực lớn ($18446744073709551615$), sai lệch định dạng yêu cầu.
+   - *Giải pháp*: Ép kiểu tường minh `(int)p->trapframe->a0` khi truyền vào hàm `printf`. Thao tác này vừa loại bỏ triệt để cảnh báo từ compiler, vừa đảm bảo hiển thị đúng số nguyên có dấu của mã lỗi (ví dụ `-> -1`).
 
-3. **Bảo toàn và cô lập trạng thái tiến trình**:
-   - `trace_mask` được lưu độc lập trong từng `struct proc`. Khi tiến trình gọi `fork()`, kernel sao chép trực tiếp giá trị này sang tiến trình con.
-   - Khi gọi `exec()`, không gian bộ nhớ user space bị thay thế nhưng cấu trúc `struct proc` trong kernel vẫn được giữ nguyên, đảm bảo chương trình mục tiêu kế thừa toàn vẹn cấu hình theo dõi.
+3. **Bảo toàn và cô lập `trace_mask` qua các thế hệ tiến trình**:
+   - *Khó khăn*: Khi tiến trình gọi `exec()`, image bộ nhớ bị thay thế nhưng `struct proc` trong kernel vẫn giữ nguyên nên `trace_mask` được duy trì. Tuy nhiên, khi gọi `fork()`, một `struct proc` mới được cấp phát cho tiến trình con. Nếu không sao chép cẩn thận, toàn bộ cây tiến trình con cháu (ví dụ trong các bài test fork nhiều tầng) sẽ mất tính năng theo dõi. Đồng thời, nếu không dọn dẹp khi tiến trình kết thúc, tiến trình mới tái sử dụng lại slot `struct proc` cũ có thể bị ảnh hưởng bởi dữ liệu rác.
+   - *Giải pháp*: Sao chép trực tiếp `np->trace_mask = p->trace_mask` trong hàm `fork()`, đồng thời chủ động gán `p->trace_mask = 0` trong cả `allocproc()` và `freeproc()`, đảm bảo tính toàn vẹn và cô lập giữa các tiến trình độc lập.
 
 ---
 
-## 4. Kết quả kiểm thử
+### 1.4 Kiểm thử (Testing)
 
-### 4.1 Theo dõi một syscall cụ thể (`SYS_read`)
+Nhóm tiến hành thực nghiệm trên bộ công cụ kiểm thử tự động `grade-lab-syscall` cùng các kịch bản kiểm tra thủ công.
 
-```text
-$ trace 32 grep hello README
-3: syscall read -> 1023
-3: syscall read -> 966
-3: syscall read -> 70
-3: syscall read -> 0
-```
-*Đánh giá:* Với `mask = 32` (`1 << 5`), kernel chỉ lọc và in các lời gọi `read`. Các syscall khác (`exec`, `open`, `close`) không bị ghi log.
+#### 1.4.1 Kịch bản 1: Theo dõi một syscall cụ thể (`trace 32 grep hello README`)
+- **Mục đích**: Kiểm tra khả năng lọc chính xác syscall được chỉ định (`32 = 1 << 5` tức `SYS_read`). Các syscall khác như `exec`, `open`, `close` không được phép xuất hiện.
+- **Kết quả thực tế**:
+  ```text
+  $ trace 32 grep hello README
+  3: syscall read -> 1023
+  3: syscall read -> 966
+  3: syscall read -> 70
+  3: syscall read -> 0
+  ```
+- **Nhận xét**: Chỉ có syscall `read` được in ra cùng số byte đọc được; khi kết thúc file đọc trả về 0. Đạt yêu cầu.
 
-### 4.2 Theo dõi toàn bộ syscall (`mask = 2147483647`)
+#### 1.4.2 Kịch bản 2: Theo dõi toàn bộ syscall (`trace 2147483647 grep hello README`)
+- **Mục đích**: Kiểm tra khả năng theo dõi đồng thời tất cả các syscall khi toàn bộ 31 bit thấp được bật.
+- **Kết quả thực tế**:
+  ```text
+  $ trace 2147483647 grep hello README
+  4: syscall trace -> 0
+  4: syscall exec -> 3
+  4: syscall open -> 3
+  4: syscall read -> 1023
+  4: syscall read -> 966
+  4: syscall read -> 70
+  4: syscall read -> 0
+  4: syscall close -> 0
+  ```
+- **Nhận xét**: Log ghi nhận đầy đủ chu trình từ khởi tạo `trace`, nạp chương trình qua `exec`, mở file `open`, đọc dữ liệu `read` đến khi kết thúc bằng `close`.
 
-```text
-$ trace 2147483647 grep hello README
-4: syscall trace -> 0
-4: syscall exec -> 3
-4: syscall open -> 3
-4: syscall read -> 1023
-4: syscall read -> 966
-4: syscall read -> 70
-4: syscall read -> 0
-4: syscall close -> 0
-```
-*Đánh giá:* Ghi nhận đầy đủ chu trình thực thi từ khi thiết lập `trace`, nạp binary bằng `exec`, đọc dữ liệu đến khi đóng file bằng `close`.
+#### 1.4.3 Kịch bản 3: Không kích hoạt theo dõi (`grep hello README`)
+- **Mục đích**: Đảm bảo hệ thống không in log khi chạy các lệnh thông thường không thông qua `trace`.
+- **Kết quả thực tế**:
+  ```text
+  $ grep hello README
+  $
+  ```
+- **Nhận xét**: Không có bất kỳ dòng log nào xuất hiện, chứng minh tính cô lập hoàn toàn giữa các tiến trình.
 
-### 4.3 Chạy thông thường không kích hoạt trace
+#### 1.4.4 Kịch bản 4: Kế thừa theo dõi qua các thế hệ tiến trình con (`trace 2 usertests forkforkfork`)
+- **Mục đích**: Kiểm tra việc kế thừa qua nhiều cấp `fork()` (`2 = 1 << 1` tức `SYS_fork`).
+- **Kết quả thực tế**:
+  ```text
+  $ trace 2 usertests forkforkfork
+  usertests starting
+  test forkforkfork: 407: syscall fork -> 408
+  408: syscall fork -> 409
+  409: syscall fork -> 410
+  410: syscall fork -> 411
+  ...
+  411: syscall fork -> -1
+  OK
+  ```
+- **Nhận xét**: Tất cả tiến trình con cháu sinh ra đều tự động kế thừa `trace_mask` và in log khi gọi `fork()`. Khi bảng tiến trình đạt giới hạn cực đại, giá trị `-1` được hiển thị chính xác.
 
-```text
-$ grep hello README
-$
-```
-*Đánh giá:* Không xuất hiện log, đảm bảo tính cô lập giữa các tiến trình không được chỉ định theo dõi.
-
-### 4.4 Kế thừa qua nhiều cấp tiến trình con (`trace 2 usertests forkforkfork`)
-
-```text
-$ trace 2 usertests forkforkfork
-usertests starting
-test forkforkfork: 407: syscall fork -> 408
-408: syscall fork -> 409
-409: syscall fork -> 410
-410: syscall fork -> 411
-...
-411: syscall fork -> -1
-OK
-```
-*Đánh giá:* Tiến trình con qua các cấp `fork()` tự động kế thừa `trace_mask`. Khi bảng tiến trình đầy, mã lỗi `-1` hiển thị chính xác.
-
-### 4.5 Kết quả chấm điểm tự động (`grade-lab-syscall`)
-
+#### 1.4.5 Kết quả chấm điểm tự động (`grade-lab-syscall`)
+Toàn bộ testcase trong bộ chấm điểm đều vượt qua:
 ```text
 == Test trace 32 grep == trace 32 grep: OK (1.1s) 
 == Test trace close grep == trace close grep: OK (0.6s) 
@@ -243,6 +211,10 @@ OK
 
 ---
 
-## 5. Kết luận
+### 1.5 Kết luận
 
-Tính năng system call `trace` đã được hiện thực hoàn chỉnh trên hệ điều hành xv6-riscv, đáp ứng đúng đặc tả kỹ thuật, đảm bảo tính cô lập và kế thừa giữa các tiến trình, đồng thời vượt qua toàn bộ các bài kiểm thử trong bộ testcase tự động.
+- Nhóm đã hoàn thành việc triển khai system call `trace` trên hệ điều hành xv6-riscv, đáp ứng đầy đủ các tiêu chí kỹ thuật và vượt qua 100% các bài kiểm thử.
+- **Kiến thức đúc kết**:
+  - Nắm vững chu trình kích hoạt và điều phối của system call từ user space qua lệnh `ecall` vào kernel trap handler.
+  - Hiểu rõ cơ chế quản lý dữ liệu tiến trình thông qua `struct proc`, cách kernel duy trì trạng thái khi gọi `exec()` và kế thừa ngữ cảnh khi gọi `fork()`.
+  - Thành thạo việc xử lý giá trị trả về, kiểm soát kiểu dữ liệu và định dạng đầu ra an toàn trong môi trường kernel.
