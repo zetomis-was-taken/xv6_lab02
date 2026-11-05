@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 775" width="100%" height="100%">
+  <defs>
+    <!-- Arrow marker -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569"/>
+    </marker>
+    <!-- Drop shadow filter -->
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <style>
+    .node-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 13px; fill: #1e293b; text-anchor: middle; dominant-baseline: central; }
+    .node-title { font-weight: 600; }
+    .node-desc { font-size: 11.5px; fill: #475569; }
+    .edge-line { stroke: #64748b; stroke-width: 1.75; fill: none; }
+    .edge-label-bg { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1; rx: 4; }
+    .edge-label-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; font-weight: 500; fill: #334155; text-anchor: middle; dominant-baseline: central; }
+    .terminal { fill: #f0fdf4; stroke: #16a34a; stroke-width: 1.75; rx: 24; }
+    .process { fill: #f8fafc; stroke: #64748b; stroke-width: 1.5; rx: 7; }
+    .highlight-process { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.75; rx: 7; }
+    .decision { fill: #fffbeb; stroke: #d97706; stroke-width: 1.75; }
+    .fail-process { fill: #fff1f2; stroke: #e11d48; stroke-width: 1.5; rx: 7; }
+  </style>
+
+  <!-- ================= EDGES ================= -->
+  <!-- TrapEntry -> FetchSysNum -->
+  <path d="M 450 74 L 450 111" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- FetchSysNum -> ValidateNum -->
+  <path d="M 450 157 L 450 198" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- ValidateNum -> PrintUnknown (Left Branch) -->
+  <path d="M 320 240 L 160 240 L 160 291" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- PrintUnknown -> SetReturnErr -->
+  <path d="M 160 337 L 160 371" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- SetReturnErr -> TrapReturn (Merge at Y=645) -->
+  <path d="M 160 417 L 160 645 L 438 645" class="edge-line"/>
+
+  <!-- ValidateNum -> ExecHandler (Bottom Branch) -->
+  <path d="M 450 280 L 450 317" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- ExecHandler -> CheckMask -->
+  <path d="M 450 371 L 450 418" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- CheckMask -> PrintTrace (Bottom Branch: Đúng) -->
+  <path d="M 450 500 L 450 542" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- PrintTrace -> TrapReturn (Central down) -->
+  <path d="M 450 596 L 450 689" class="edge-line" marker-end="url(#arrow)"/>
+
+  <!-- CheckMask -> TrapReturn (Right Branch: Sai / Bypass) -->
+  <path d="M 580 460 L 690 460 L 690 645 L 462 645" class="edge-line"/>
+
+  <!-- ================= EDGE LABELS ================= -->
+  <!-- ValidateNum -> PrintUnknown: Không -->
+  <g transform="translate(235, 240)">
+    <rect x="-24" y="-10" width="48" height="20" class="edge-label-bg"/>
+    <text y="0" class="edge-label-text" fill="#b91c1c">Không</text>
+  </g>
+
+  <!-- ValidateNum -> ExecHandler: Có -->
+  <g transform="translate(470, 298)">
+    <rect x="-16" y="-10" width="32" height="20" class="edge-label-bg"/>
+    <text y="0" class="edge-label-text" fill="#15803d">Có</text>
+  </g>
+
+  <!-- CheckMask -> PrintTrace: Đúng (Cần theo dõi) -->
+  <g transform="translate(525, 520)">
+    <rect x="-65" y="-10" width="130" height="20" class="edge-label-bg"/>
+    <text y="0" class="edge-label-text" fill="#15803d">Đúng (Cần theo dõi)</text>
+  </g>
+
+  <!-- CheckMask -> Right Branch: Sai (Không theo dõi) -->
+  <g transform="translate(635, 445)">
+    <rect x="-68" y="-10" width="136" height="20" class="edge-label-bg"/>
+    <text y="0" class="edge-label-text" fill="#475569">Sai (Không theo dõi)</text>
+  </g>
+
+  <!-- ================= NODES ================= -->
+
+  <!-- TrapEntry Node -->
+  <g filter="url(#shadow)" transform="translate(450, 50)">
+    <rect x="-145" y="-24" width="290" height="48" class="terminal"/>
+    <text class="node-text node-title" y="-7">Lệnh <tspan font-family="monospace">ecall</tspan> từ user space</text>
+    <text class="node-text node-desc" y="11">Trap trực tiếp vào kernel</text>
+  </g>
+
+  <!-- FetchSysNum Node -->
+  <g filter="url(#shadow)" transform="translate(450, 135)">
+    <rect x="-140" y="-22" width="280" height="44" class="process"/>
+    <text class="node-text" y="-7">Đọc số hiệu system call</text>
+    <text class="node-text node-desc" y="9">Lấy từ thanh ghi <tspan font-family="monospace">p-&gt;trapframe-&gt;a7</tspan></text>
+  </g>
+
+  <!-- ValidateNum Node (Diamond) -->
+  <g filter="url(#shadow)" transform="translate(450, 240)">
+    <polygon points="0,-40 130,0 0,40 -130,0" class="decision"/>
+    <text class="node-text node-title" y="-9"><tspan font-family="monospace">0 &lt; num &lt; NELEM(syscalls)</tspan></text>
+    <text class="node-text node-desc" y="10">và <tspan font-family="monospace">syscalls[num] != NULL</tspan>?</text>
+  </g>
+
+  <!-- PrintUnknown Node -->
+  <g filter="url(#shadow)" transform="translate(160, 315)">
+    <rect x="-115" y="-22" width="230" height="44" class="fail-process"/>
+    <text class="node-text" y="-7">In cảnh báo lỗi kernel:</text>
+    <text class="node-text node-desc" y="9"><tspan font-family="monospace">"unknown sys call %d"</tspan></text>
+  </g>
+
+  <!-- SetReturnErr Node -->
+  <g filter="url(#shadow)" transform="translate(160, 395)">
+    <rect x="-115" y="-22" width="230" height="44" class="fail-process"/>
+    <text class="node-text node-title" y="-7">Gán mã lỗi trả về</text>
+    <text class="node-text node-desc" y="9"><tspan font-family="monospace">p-&gt;trapframe-&gt;a0 = -1</tspan></text>
+  </g>
+
+  <!-- ExecHandler Node -->
+  <g filter="url(#shadow)" transform="translate(450, 345)">
+    <rect x="-155" y="-26" width="310" height="52" class="process"/>
+    <text class="node-text node-title" y="-8">Gọi handler syscall tương ứng</text>
+    <text class="node-text node-desc" y="11"><tspan font-family="monospace">syscalls[num]()</tspan> &rarr; lưu kết quả vào <tspan font-family="monospace">a0</tspan></text>
+  </g>
+
+  <!-- CheckMask Node (Diamond) -->
+  <g filter="url(#shadow)" transform="translate(450, 460)">
+    <polygon points="0,-40 130,0 0,40 -130,0" class="decision"/>
+    <text class="node-text node-title" y="-9">Kiểm tra bitmask theo dõi</text>
+    <text class="node-text node-desc" y="10"><tspan font-family="monospace">(trace_mask &amp; (1 &lt;&lt; num)) != 0</tspan>?</text>
+  </g>
+
+  <!-- PrintTrace Node (Highlighted) -->
+  <g filter="url(#shadow)" transform="translate(450, 570)">
+    <rect x="-155" y="-26" width="310" height="52" class="highlight-process"/>
+    <text class="node-text node-title" y="-8" fill="#1d4ed8">In log định dạng ra console</text>
+    <text class="node-text node-desc" y="11"><tspan font-family="monospace">pid: syscall name -&gt; return_value</tspan></text>
+  </g>
+
+  <!-- TrapReturn Node -->
+  <g filter="url(#shadow)" transform="translate(450, 715)">
+    <rect x="-175" y="-24" width="350" height="48" class="terminal"/>
+    <text class="node-text node-title" y="-7" fill="#15803d">Trả điều khiển về user space</text>
+    <text class="node-text node-desc" y="11">Thông qua hàm <tspan font-family="monospace">usertrapret()</tspan></text>
+  </g>
+</svg>
