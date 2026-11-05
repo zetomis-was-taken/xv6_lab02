@@ -46,15 +46,15 @@ Kernel chịu trách nhiệm bảo vệ cấu trúc nội bộ, trích xuất d�
   - Trả về -1 khi: max <= 0, con trỏ buf là NULL (dst_addr == 0), địa chỉ không hợp lệ hoặc không có quyền ghi trong bảng trang, hoặc số tiến trình thực tế lớn hơn max.
 - **Hành vi xử lý lỗi tại ranh giới**:
   - Khi system call trả về -1, kernel không thực hiện thao tác xóa hay hoàn tác (rollback) các bản ghi có thể đã được sao chép trước thời điểm phát sinh lỗi.
-  - Chương trình pstree kiểm tra giá trị trả về: nếu nhận giá trị âm, chương trình lập tức thông báo lỗi ra stderr và dừng thực thi, không tiếp tục đọc hay in dữ liệu trong bộ đệm.
+  - Chương trình pstree kiểm tra giá trị trả về: nếu nhận giá trị âm, chương trình lập tức thông báo lỗi "pstree: ptree failed" ra stderr (file descriptor 2) và dừng thực thi, không tiếp tục đọc hay in dữ liệu trong bộ đệm.
 - **Định dạng hiển thị của tiện ích pstree**:
   - In mỗi tiến trình trên một dòng theo định dạng: <pid> <name> state=<state> mem=<memsize>.
   - Tiến trình gốc có độ sâu 0. Tiến trình con thụt vào 2 khoảng trắng so với cha. Các tiến trình con cùng cha được xếp theo PID tăng dần.
 
 
-### 3.2 Thuật toán và Thiết kế giải pháp
+### 3.2 Thuật toán và giải pháp
 
-#### 3.2.1 Ý tưởng 
+#### 3.2.1 Ý tưởng
 
 1. **Bảo vệ ranh giới Kernel - User**: Bảng proc[NPROC] nằm trong bộ nhớ kernel, người dùng không thể truy cập trực tiếp. System call ptree trích xuất thông tin qua cấu trúc trung gian struct ptreeinfo rồi dùng copyout() ghi vào bảng trang của tiến trình gọi.
 2. **Chiến lược quét hai lượt (Two-pass Scan)**:
@@ -79,11 +79,11 @@ Kernel chịu trách nhiệm bảo vệ cấu trúc nội bộ, trích xuất d�
 
 ```mermaid
 flowchart TD
-    Start(["Bắt đầu: pstree"]) --> Alloc["Cấp phát plist[64] và visited[64]"]
+    Start(["Bắt đầu: pstree"]) --> Alloc["Khai báo plist[64] và visited[64] trên stack"]
     Alloc --> CallSys["Gọi ptree(plist, 64)"]
     CallSys --> CheckRet{"n < 0 "}
     
-    CheckRet -- "Có" --> PrintErr["In lỗi: pstree failed"]
+    CheckRet -- "Có" --> PrintErr["In lỗi: pstree: ptree failed"]
     PrintErr --> ExitFail(["Thoát mã lỗi 1"])
     
     CheckRet -- "Không" --> Sort["Sắp xếp plist theo PID tăng dần"]
@@ -112,8 +112,8 @@ flowchart TD
 flowchart TD
     FromPass1(["Bắt đầu Lượt 2"]) --> LockWait["acquire(&wait_lock), count = 0"]
     LockWait --> Loop["Lặp từng slot p trong proc[]"]
-    Loop --> SkipUnused{"p->state == UNUSED "}
-    SkipUnused -- "Đúng" --> CheckEnd{"Hết bảng "}
+    Loop --> LockP["acquire(&p->lock)"] --> SkipUnused{"p->state == UNUSED "}
+    SkipUnused -- "Đúng" --> ReleaseUnused["release(&p->lock)"] --> CheckEnd{"Hết bảng "}
     
     SkipUnused -- "Sai" --> Guard{"count >= max "}
     Guard -- "Đúng (Tràn SMP)" --> ExitErr["release(&p->lock), release(&wait_lock) -> Trả về -1"]
@@ -123,8 +123,8 @@ flowchart TD
     CheckCopy -- "Sai" --> ExitCopyErr["release(&wait_lock) -> Trả về -1"]
     CheckCopy -- "Đúng" --> Inc["count++"] --> CheckEnd
     
-    CheckEnd -- "Chưa" --> Loop
-    CheckEnd -- "Rồi" --> ExitOk["release(&wait_lock), trả về count"]
+    CheckEnd -- "Sai" --> Loop
+    CheckEnd -- "Đúng" --> ExitOk["release(&wait_lock), trả về count"]
 ```
 
 
@@ -154,42 +154,55 @@ flowchart TD
 
 ### 3.4 Thực nghiệm và Kết quả kiểm thử
 
-pstree và system call ptree đã được biên dịch và kiểm thử trực tiếp trên môi trường giả lập QEMU của hệ điều hành xv6. Có hai nhóm kết quả: các kịch bản thực thi trực tiếp trên QEMU quan sát được từ giao diện shell, và các ca kiểm thử biên an toàn được xác nhận dựa trên luồng điều khiển mã nguồn.
+pstree và system call ptree đã được biên dịch và kiểm thử trực tiếp trên môi trường giả lập QEMU của hệ điều hành xv6. Có hai nhóm kết quả: các trường hợp thực thi trực tiếp trên QEMU quan sát được từ giao diện shell, và các ca kiểm thử biên an toàn được xác nhận dựa trên luồng điều khiển mã nguồn.
 
-#### 3.4.1 Kịch bản 1: Cây tiến trình chuẩn từ shell khởi động
+> **Ghi chú về phương pháp kiểm thử hai trường hợp độc lập**:
+> Hai trường hợp thực nghiệm dưới đây được tiến hành trong **hai phiên khởi động hệ điều hành xv6 hoàn toàn riêng biệt trên QEMU** (clean boot) nhằm theo dõi sự cấp phát mã định danh tiến trình PID tuần tự và nguyên bản từ trạng thái hệ thống mới khởi tạo.
 
-- **Thao tác**: Khởi động xv6, chạy lệnh pstree tại shell mặc định.
+#### 3.4.1 Trường hợp 1: Cây tiến trình chuẩn từ shell khởi động
+
+- **Thao tác**: Khởi động mới xv6 trên QEMU, thực thi lệnh pstree tại shell mặc định.
 - **Kết quả**:
   ```bash
   $ pstree
-  1 init state=2 mem=12288
-    2 sh state=2 mem=16384
+  1 init state=2 mem=20480
+    2 sh state=2 mem=24576
       3 pstree state=4 mem=20480
   ```
 - **Cấu trúc tiến trình**:
-  - *1 init state=2 mem=12288*: Tiến trình gốc (PID 1, PPID 0), mức thụt lề 0 (cấp gốc), trạng thái SLEEPING (2 - đang ngủ chờ tiến trình con qua hàm wait()), không gian địa chỉ người dùng p->sz là 12288 bytes (3 trang nhớ ảo).
-  -   *2 sh state=2 mem=16384*: Shell cha (PID 2, PPID 1), con của init, thụt lề 2 khoảng trắng (cấp 1), trạng thái SLEEPING (2 - đang chờ nhập lệnh từ console), không gian địa chỉ 16384 bytes (4 trang).
-  -    *3 pstree state=4 mem=20480*: Tiến trình con thực thi tiện ích pstree (PID 3, PPID 2), con của sh, thụt lề 4 khoảng trắng (cấp 2), trạng thái RUNNING (4 - đang chạy trên CPU để quét và in cây tiến trình), không gian địa chỉ 20480 bytes (5 trang).
-- **Nhận xét**: Cây tiến trình hiển thị đúng 3 cấp phân nhánh theo cấu trúc DFS. Mức thụt lề 2 khoảng trắng cho mỗi thế hệ giúp phân biệt trực quan thứ bậc quan hệ. Các trạng thái và kích thước không gian địa chỉ phản ánh chính xác trạng thái thực thi tại thời điểm quét.
+  - *1 init state=2 mem=20480*: Tiến trình gốc của hệ thống (PID 1, PPID 0), mức thụt lề 0 (cấp gốc), trạng thái SLEEPING (2 - đang ngủ chờ tiến trình con qua hàm wait()), không gian địa chỉ người dùng p->sz là 20480 bytes (tương ứng 5 trang nhớ ảo $5 \times 4096$).
+  - *2 sh state=2 mem=24576*: Shell cha (PID 2, PPID 1), con trực tiếp của init, thụt lề 2 khoảng trắng (cấp 1), trạng thái SLEEPING (2 - đang chờ nhập lệnh từ console), không gian địa chỉ 24576 bytes (6 trang nhớ ảo $6 \times 4096$).
+  - *3 pstree state=4 mem=20480*: Tiến trình con thực thi tiện ích pstree (PID 3, PPID 2), con của sh, thụt lề 4 khoảng trắng (cấp 2), trạng thái RUNNING (4 - đang thực thi trên CPU để quét và in cây tiến trình), không gian địa chỉ 20480 bytes (5 trang nhớ ảo).
+- **Nhận xét**: Cây tiến trình hiển thị đúng 3 cấp phân nhánh theo cấu trúc DFS. Mức thụt lề 2 khoảng trắng cho mỗi thế hệ giúp phân biệt trực quan thứ bậc quan hệ cha - con. Các trạng thái và kích thước bộ nhớ phản ánh chính xác trạng thái thực thi tại thời điểm quét.
 
-#### 3.4.2 Kịch bản 2: Cây tiến trình nhiều cấp với Subshell lồng nhau
+#### 3.4.2 Trường hợp 2: Cây tiến trình nhiều cấp với Subshell lồng nhau
 
-- **Thao tác**: Mở một subshell con từ shell hiện tại (sh) rồi thực thi lệnh pstree.
+- **Thao tác**: Khởi động một phiên xv6 mới độc lập trên QEMU, mở một subshell con từ shell hiện tại (sh) rồi thực thi lệnh pstree.
 - **Kết quả**:
   ```bash
   $ sh
   $ pstree
-  1 init state=2 mem=12288
-    2 sh state=2 mem=16384
-      3 sh state=2 mem=16384
+  1 init state=2 mem=20480
+    2 sh state=2 mem=24576
+      3 sh state=2 mem=24576
         4 pstree state=4 mem=20480
   ```
 - **Cấu trúc tiến trình**:
-  - *1 init state=2 mem=12288*: Tiến trình gốc của hệ thống (PID 1, mức 0).
-  - *2 sh state=2 mem=16384*: Shell cha khởi tạo ban đầu từ init (PID 2, con của init, mức 1, thụt 2 khoảng trắng).
-  - *3 sh state=2 mem=16384*: Subshell con được khởi chạy từ shell cha (PID 3, con của sh PID 2, mức 2, thụt 4 khoảng trắng), trạng thái SLEEPING chờ nhập lệnh.
+  - *1 init state=2 mem=20480*: Tiến trình gốc của hệ thống (PID 1, mức 0).
+  - *2 sh state=2 mem=24576*: Shell cha khởi tạo ban đầu từ init (PID 2, con của init, mức 1, thụt 2 khoảng trắng), trạng thái SLEEPING (2).
+  - *3 sh state=2 mem=24576*: Subshell con được khởi chạy từ shell cha (PID 3, con của sh PID 2, mức 2, thụt 4 khoảng trắng), trạng thái SLEEPING chờ nhập lệnh. Kích thước không gian nhớ 24576 bytes bằng đúng kích thước shell cha do cùng thực thi tệp nhị phân sh.
   - *4 pstree state=4 mem=20480*: Tiến trình con thực thi lệnh pstree (PID 4, con của subshell PID 3, mức 3, thụt 6 khoảng trắng), trạng thái RUNNING trên CPU.
 - **Nhận xét**: Thuật toán DFS xử lý hoàn hảo chuỗi liên kết phả hệ 4 thế hệ qua subshell lồng nhau. Mức thụt lề tăng đều đặn 2 khoảng trắng qua từng cấp thế hệ, bảo đảm tính trực quan và chính xác khi cây tiến trình mở rộng độ sâu.
+
+**Trường hợp thực thi liên tiếp trên cùng một phiên**:
+Nếu thực hiện Trường hợp 2 ngay trong cùng phiên làm việc với Trường hợp 1 (không khởi động lại QEMU), kết quả quan sát được sẽ là:
+> ```bash
+> 1 init state=2 mem=20480
+>   2 sh state=2 mem=24576
+>     4 sh state=2 mem=24576
+>       5 pstree state=4 mem=20480
+> ```
+*Hiện tượng biến thiên PID*: Tiến trình pstree ở Trường hợp 1 đã được cấp phát PID 3; khi hoàn thành và gọi exit(0), shell cha gọi wait() thu hồi tài nguyên, slot tiến trình này được chuyển hoàn toàn về trạng thái UNUSED. Khi người dùng mở subshell tiếp theo, kernel xv6 tiếp tục tăng biến nextpid, cấp phát PID 4 cho subshell mới và PID 5 cho tiến trình pstree mới. Nhờ điều kiện lọc p->state != UNUSED, kernel bỏ qua vị trí slot PID 3 đã giải phóng, bảo đảm danh sách thu thập chỉ chứa đúng các tiến trình thực sự còn tồn tại.
 
 #### 3.4.3 Các ca kiểm thử biên và xử lý lỗi
 
@@ -209,11 +222,9 @@ Các trường hợp biên và luồng bắt lỗi của system call ptree đư�
 ### 3.5 Kết luận
 
 - **Tổng kết giải pháp**:
-  Bài thực hành đã hoàn thành việc thiết kế và cài đặt tính năng Process Tree trên hệ điều hành xv6. Tiện ích pstree đã được thực nghiệm thành công trên môi trường QEMU, hiển thị chính xác cây tiến trình phân cấp dạng DFS từ shell gốc và qua nhiều lớp subshell lồng nhau. Giải pháp phân định ranh giới chặt chẽ giữa kernel space, trích xuất và bảo vệ dữ liệu đồng thời qua system call ptree và user space,sắp xếp, dựng cây phân cấp và định dạng hiển thị.
+  Bài thực hành đã hoàn thành việc thiết kế và cài đặt tính năng Process Tree trên hệ điều hành xv6. Tiện ích pstree đã được thực nghiệm thành công trên môi trường QEMU, hiển thị chính xác cây tiến trình phân cấp dạng DFS từ shell gốc và qua nhiều lớp subshell lồng nhau. Giải pháp phân định ranh giới chặt chẽ giữa kernel space (trích xuất và bảo vệ dữ liệu đồng thời qua system call ptree) và user space (sắp xếp, dựng cây phân cấp và định dạng hiển thị).
 
 - **Các bài học**:  
    - *Nguyên tắc phân cấp khóa trong Kernel*: Hiểu rõ vai trò của wait_lock trong việc bảo vệ cấu trúc quan hệ phả hệ tiến trình, tuân thủ thứ tự lấy wait_lock trước p->lock để phòng tránh nguy cơ deadlock ABBA với exit() và wait().  
    - *Tối ưu hóa thời gian giữ spinlock*: Giải phóng sớm khóa riêng p->lock của từng tiến trình bằng cách đệm dữ liệu sang stack kernel trước khi gọi copyout().  
    - *Lập trình và kiểm soát bộ đệm*: Áp dụng chiến lược quét hai lượt để kiểm soát sức chứa, đặt chốt chặn thời gian thực count >= max ngăn tràn bộ đệm trên hệ thống SMP, và xây dựng cơ chế quét ba tầng phía user space để bảo đảm không thất lạc bản ghi.
-
-
