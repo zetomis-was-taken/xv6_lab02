@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "ptree.h"
 
 struct cpu cpus[NCPU];
 
@@ -692,4 +693,66 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// Thu thập thông tin các tiến trình đang hoạt động trong hệ thống
+int proc_ptree(uint64 dst_addr, int max)
+{
+  struct proc *p;
+  struct proc *my_p = myproc();
+  struct ptreeinfo kinfo;
+  uint64 offset;
+  int count = 0;
+  int total_active = 0;
+
+  // Kiểm tra tính hợp lệ của địa chỉ bộ đệm người dùng và số lượng max
+  if (max <= 0 || dst_addr == 0)
+    return -1;
+
+  // Lượt 1: Đếm tổng số tiến trình đang hoạt động để kiểm tra giới hạn max
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      total_active++;
+    }
+    release(&p->lock);
+  }
+
+  // Trả về -1 nếu số tiến trình thực tế vượt quá max
+  if (total_active > max)
+    return -1;
+
+  // Lượt 2: Thu thập dữ liệu an toàn và sao chép sang user space.
+  // Thứ tự khóa: acquire wait_lock trước p->lock để bảo vệ con trỏ p->parent
+  acquire(&wait_lock);
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      if (count >= max) {
+        release(&p->lock);
+        release(&wait_lock);
+        return -1;
+      }
+      kinfo.pid = p->pid;
+      kinfo.ppid = (p->parent) ? p->parent->pid : 0;
+      kinfo.state = p->state;
+      kinfo.memsize = p->sz;
+      safestrcpy(kinfo.name, p->name, sizeof(kinfo.name));
+
+      // Giải phóng p->lock trước khi gọi copyout để tránh sleep trong lúc giữ spinlock
+      release(&p->lock);
+
+      offset = dst_addr + (uint64)count * sizeof(struct ptreeinfo);
+      if (copyout(my_p->pagetable, offset, (char *)&kinfo, sizeof(kinfo)) < 0) {
+        release(&wait_lock);
+        return -1;
+      }
+      count++;
+    } else {
+      release(&p->lock);
+    }
+  }
+  release(&wait_lock);
+
+  return count;
 }
